@@ -14,7 +14,7 @@ app.listen(PORT, () => {
   console.log(`Server is running on port ${PORT}`);
 });
 
-app.post("/api/telemetry/visitors", async (req, res) => {
+app.post("/visitors", async (req, res) => {
   const { visitorId } = req.body;
   if (!visitorId) {
     return res.status(400).json({ error: "visitorId is required" });

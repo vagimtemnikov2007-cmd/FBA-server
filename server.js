@@ -1,6 +1,6 @@
 import express from "express";
 import cors from "cors";
-import animationRouter from './anmations.js';
+import animationRouter from './animations.js';
 import telemetryRouter from "./telemetry.js";
 
 const app = express();

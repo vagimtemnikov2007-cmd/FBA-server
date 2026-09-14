@@ -17,7 +17,7 @@ router.get("/animations", async (req, res) => {
         download_url,
         preview_url,
         author,
-        created_at,
+        created_at
     `)
     .order("created_at", {ascending: false})
 

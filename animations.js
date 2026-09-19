@@ -37,7 +37,6 @@ async function fetchAnimationsFromDatabase() {
 router.get("/animations", async (req, res) => {
   try {
 
-    // Если кэш уже есть
     if (animationCache !== null) {
       console.log("Animations served from cache");
 
@@ -45,12 +44,9 @@ router.get("/animations", async (req, res) => {
     }
 
 
-    // Если кэш пустой
     console.log("Animations cache empty");
 
     const animations = await fetchAnimationsFromDatabase();
-
-    // Сохраняем данные в RAM
     animationCache = animations;
 
     return res.json(animationCache);
@@ -86,7 +82,7 @@ router.post("/animations/cache/refresh", async (req, res) => {
 
     console.log("Animations cache refreshed");
 
-
+ 
     return res.json({
       success: true,
       animationsCount: animationCache.length

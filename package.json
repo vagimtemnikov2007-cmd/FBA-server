@@ -10,8 +10,8 @@
   "keywords": [],
   "type": "module",
   "dependencies": {
-    "@aws-sdk/client-s3": "^3.1139.0",
     "@supabase/supabase-js": "^2.116.0",
+    "aws4fetch": "^1.0.20",
     "cors": "^2.8.6",
     "express": "^5.2.1",
     "multer": "^2.4.0"

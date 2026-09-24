@@ -1,32 +1,74 @@
 import express from "express";
 import multer from "multer";
 import crypto from "crypto";
+
+import {
+    S3Client,
+    PutObjectCommand,
+    DeleteObjectCommand,
+} from "@aws-sdk/client-s3";
+
 import { createClient } from "@supabase/supabase-js";
 
 const router = express.Router();
+
+
+// ======================================================
+// SUPABASE
+// ======================================================
 
 const supabase = createClient(
     process.env.SUPABASE_URL,
     process.env.SUPABASE_SERVICE_ROLE_KEY
 );
 
+
+// ======================================================
+// CLOUDFLARE R2
+// ======================================================
+
+const r2 = new S3Client({
+    region: "auto",
+
+    endpoint:
+        `https://${process.env.R2_ACCOUNT_ID}.r2.cloudflarestorage.com`,
+
+    credentials: {
+        accessKeyId:
+            process.env.R2_ACCESS_KEY_ID,
+
+        secretAccessKey:
+            process.env.R2_SECRET_ACCESS_KEY,
+    },
+});
+
+
+const R2_BUCKET =
+    process.env.R2_BUCKET_NAME || "fba";
+
+
+// ======================================================
+// MULTER
+// ======================================================
+
 const upload = multer({
     storage: multer.memoryStorage(),
 
     limits: {
-        fileSize: 2 * 1024 * 1024, // 2 MB
+        // JSON-анимации маленькие.
+        // 2 MB здесь с огромным запасом.
+        fileSize: 2 * 1024 * 1024,
     },
 
     fileFilter: (req, file, callback) => {
-        const fileName = file.originalname.toLowerCase();
+        const fileName =
+            file.originalname.toLowerCase();
 
-        const allowed =
-            fileName.endsWith(".json") ||
-            file.mimetype === "application/json";
-
-        if (!allowed) {
+        if (!fileName.endsWith(".json")) {
             return callback(
-                new Error("Only .json files are allowed")
+                new Error(
+                    "Only .json files are allowed"
+                )
             );
         }
 
@@ -35,14 +77,21 @@ const upload = multer({
 });
 
 
+// ======================================================
+// SUBMIT ANIMATION
+// ======================================================
+
 router.post(
     "/submitAnimation",
+
     upload.single("file"),
 
     async (req, res) => {
-        let uploadedStoragePath = null;
+
+        let uploadedR2Key = null;
 
         try {
+
             const {
                 name,
                 author,
@@ -51,9 +100,10 @@ router.post(
 
             const file = req.file;
 
-            // ---------------------------
-            // VALIDATION
-            // ---------------------------
+
+            // ==================================================
+            // CHECK REQUIRED FIELDS
+            // ==================================================
 
             if (
                 !name?.trim() ||
@@ -62,35 +112,74 @@ router.post(
                 !file
             ) {
                 return res.status(400).json({
-                    error: "Missing required fields",
+                    error:
+                        "Missing required fields",
                 });
             }
 
-            // ---------------------------
-            // CHECK REAL JSON
-            // ---------------------------
+
+            // ==================================================
+            // CHECK JSON
+            // ==================================================
 
             let animationJson;
 
             try {
+
                 animationJson = JSON.parse(
                     file.buffer.toString("utf-8")
                 );
+
             } catch {
+
                 return res.status(400).json({
-                    error: "Invalid JSON file",
+                    error:
+                        "Invalid JSON file",
+                });
+
+            }
+
+
+            // ==================================================
+            // OPTIONAL FBA VALIDATION
+            // ==================================================
+
+            if (
+                typeof animationJson !== "object" ||
+                animationJson === null
+            ) {
+                return res.status(400).json({
+                    error:
+                        "Animation JSON must contain an object",
                 });
             }
 
-            // Можно оставить лог на время тестов
+
+            if (!animationJson.id) {
+                return res.status(400).json({
+                    error:
+                        "Animation JSON is missing id",
+                });
+            }
+
+
+            if (!animationJson.transform) {
+                return res.status(400).json({
+                    error:
+                        "Animation JSON is missing transform",
+                });
+            }
+
+
             console.log(
-                "Received animation JSON:",
-                animationJson
+                "Received animation:",
+                animationJson.id
             );
 
-            // ---------------------------
-            // UNIQUE FILE NAME
-            // ---------------------------
+
+            // ==================================================
+            // CREATE SAFE FILE NAME
+            // ==================================================
 
             const originalName =
                 file.originalname.replace(
@@ -98,119 +187,225 @@ router.post(
                     "_"
                 );
 
-            const fileName =
-                `${crypto.randomUUID()}-${originalName}`;
 
-            const storagePath =
+            const uuid =
+                crypto.randomUUID();
+
+
+            const fileName =
+                `${uuid}-${originalName}`;
+
+
+            // В R2:
+            //
+            // fba/
+            //   submissions/
+            //     uuid-sidewinder.json
+
+            const r2Key =
                 `submissions/${fileName}`;
 
-            uploadedStoragePath = storagePath;
 
-            // ---------------------------
-            // UPLOAD TO PRIVATE STORAGE
-            // ---------------------------
+            uploadedR2Key =
+                r2Key;
 
-            const {
-                error: storageError,
-            } = await supabase.storage
-                .from("animation-submissions")
-                .upload(
-                    storagePath,
-                    file.buffer,
-                    {
-                        contentType: "application/json",
-                        upsert: false,
-                    }
-                );
 
-            if (storageError) {
-                console.error(
-                    "Storage upload error:",
-                    storageError
-                );
+            // ==================================================
+            // UPLOAD TO CLOUDFLARE R2
+            // ==================================================
 
-                return res.status(500).json({
-                    error: "Failed to upload file",
+            const uploadCommand =
+                new PutObjectCommand({
+
+                    Bucket:
+                        R2_BUCKET,
+
+                    Key:
+                        r2Key,
+
+                    Body:
+                        file.buffer,
+
+                    ContentType:
+                        "application/json",
+
+                    Metadata: {
+                        originalname:
+                            originalName,
+
+                        animationid:
+                            String(animationJson.id),
+                    },
                 });
-            }
 
-            // ---------------------------
-            // SAVE SUBMISSION TO DATABASE
-            // ---------------------------
+
+            await r2.send(
+                uploadCommand
+            );
+
+
+            console.log(
+                `Uploaded to R2: ${r2Key}`
+            );
+
+
+            // ==================================================
+            // SAVE TO SUPABASE
+            // ==================================================
 
             const {
                 data,
                 error: databaseError,
             } = await supabase
-                .from("animation_submissions")
+                .from(
+                    "animation_submissions"
+                )
                 .insert({
-                    name: name.trim(),
-                    author: author.trim(),
-                    mail: mail.trim(),
 
-                    storage_path: storagePath,
+                    name:
+                        name.trim(),
 
-                    status: "pending",
+                    author:
+                        author.trim(),
+
+                    mail:
+                        mail.trim(),
+
+                    storage_path:
+                        r2Key,
+
+                    status:
+                        "pending",
+
                 })
                 .select()
                 .single();
 
+
+            // ==================================================
+            // DATABASE FAILED
+            // ==================================================
+
             if (databaseError) {
+
                 console.error(
                     "Database error:",
                     databaseError
                 );
 
-                await supabase.storage
-                    .from("animation-submissions")
-                    .remove([storagePath]);
+
+                // JSON уже попал в R2,
+                // но запись БД создать не удалось.
+                //
+                // Поэтому удаляем файл,
+                // чтобы не оставлять мусор.
+
+                try {
+
+                    await r2.send(
+                        new DeleteObjectCommand({
+
+                            Bucket:
+                                R2_BUCKET,
+
+                            Key:
+                                r2Key,
+
+                        })
+                    );
+
+                } catch (cleanupError) {
+
+                    console.error(
+                        "R2 cleanup error:",
+                        cleanupError
+                    );
+
+                }
+
 
                 return res.status(500).json({
-                    error: "Failed to save submission",
+                    error:
+                        "Failed to save submission",
                 });
             }
 
-            // ---------------------------
+
+            // ==================================================
             // SUCCESS
-            // ---------------------------
+            // ==================================================
 
             return res.status(201).json({
+
                 message:
                     "Animation submitted successfully",
 
                 submission: {
-                    id: data.id,
-                    name: data.name,
-                    author: data.author,
-                    status: data.status,
-                    created_at: data.created_at,
+
+                    id:
+                        data.id,
+
+                    name:
+                        data.name,
+
+                    author:
+                        data.author,
+
+                    status:
+                        data.status,
+
+                    created_at:
+                        data.created_at,
+
                 },
             });
 
+
         } catch (error) {
+
             console.error(
                 "Submit animation error:",
                 error
             );
 
-            if (uploadedStoragePath) {
+
+            // ==================================================
+            // CLEAN R2 AFTER UNEXPECTED ERROR
+            // ==================================================
+
+            if (uploadedR2Key) {
+
                 try {
-                    await supabase.storage
-                        .from("animation-submissions")
-                        .remove([uploadedStoragePath]);
+
+                    await r2.send(
+                        new DeleteObjectCommand({
+
+                            Bucket:
+                                R2_BUCKET,
+
+                            Key:
+                                uploadedR2Key,
+
+                        })
+                    );
 
                 } catch (cleanupError) {
+
                     console.error(
-                        "Cleanup error:",
+                        "R2 cleanup error:",
                         cleanupError
                     );
+
                 }
             }
 
+
             return res.status(500).json({
+
                 error:
                     error.message ||
                     "Internal server error",
+
             });
         }
     }

@@ -14,21 +14,19 @@ const upload = multer({
     storage: multer.memoryStorage(),
 
     limits: {
-        fileSize: 20 * 1024 * 1024,
+        fileSize: 2 * 1024 * 1024, // 2 MB
     },
 
     fileFilter: (req, file, callback) => {
         const fileName = file.originalname.toLowerCase();
 
         const allowed =
-            fileName.endsWith(".fba") ||
-            fileName.endsWith(".zip");
+            fileName.endsWith(".json") ||
+            file.mimetype === "application/json";
 
         if (!allowed) {
             return callback(
-                new Error(
-                    "Only .fba and .zip files are allowed"
-                )
+                new Error("Only .json files are allowed")
             );
         }
 
@@ -69,6 +67,28 @@ router.post(
             }
 
             // ---------------------------
+            // CHECK REAL JSON
+            // ---------------------------
+
+            let animationJson;
+
+            try {
+                animationJson = JSON.parse(
+                    file.buffer.toString("utf-8")
+                );
+            } catch {
+                return res.status(400).json({
+                    error: "Invalid JSON file",
+                });
+            }
+
+            // Можно оставить лог на время тестов
+            console.log(
+                "Received animation JSON:",
+                animationJson
+            );
+
+            // ---------------------------
             // UNIQUE FILE NAME
             // ---------------------------
 
@@ -98,10 +118,7 @@ router.post(
                     storagePath,
                     file.buffer,
                     {
-                        contentType:
-                            file.mimetype ||
-                            "application/octet-stream",
-
+                        contentType: "application/json",
                         upsert: false,
                     }
                 );
@@ -144,17 +161,12 @@ router.post(
                     databaseError
                 );
 
-                // Если БД сломалась —
-                // удаляем уже загруженный файл,
-                // чтобы он не висел мусором.
-
                 await supabase.storage
                     .from("animation-submissions")
                     .remove([storagePath]);
 
                 return res.status(500).json({
-                    error:
-                        "Failed to save submission",
+                    error: "Failed to save submission",
                 });
             }
 
@@ -181,18 +193,12 @@ router.post(
                 error
             );
 
-            // На случай неожиданной ошибки
-            // после загрузки файла.
-
             if (uploadedStoragePath) {
                 try {
                     await supabase.storage
-                        .from(
-                            "animation-submissions"
-                        )
-                        .remove([
-                            uploadedStoragePath,
-                        ]);
+                        .from("animation-submissions")
+                        .remove([uploadedStoragePath]);
+
                 } catch (cleanupError) {
                     console.error(
                         "Cleanup error:",

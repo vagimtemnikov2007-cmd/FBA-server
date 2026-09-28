@@ -3,7 +3,7 @@ import cors from "cors";
 import animationRouter from './animations.js';
 import telemetryRouter from "./telemetry.js";
 import sumbitssionsRouter from "./sumbitssions.js"
-import adminRouter from "./routes/admin.js";
+import adminRouter from "./admin.js";
 
 const app = express();
 

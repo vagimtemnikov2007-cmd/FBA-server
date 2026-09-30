@@ -831,57 +831,758 @@ router.post(
 router.post(
     "/admin/submissions",
     requireAdmin,
+
     async (req, res) => {
         try {
+
+            // ---------------------------------
+            // GET PENDING SUBMISSIONS
+            // ---------------------------------
+
             const {
                 data,
                 error,
             } = await supabase
                 .from("animation_submissions")
-                .select("*");
+                .select("*")
+                .eq(
+                    "status",
+                    "pending"
+                )
+                .order(
+                    "created_at",
+                    {
+                        ascending: false,
+                    }
+                );
 
-            console.log(
-                "ALL SUBMISSIONS:",
-                data
-            );
-
-            console.log(
-                "SUBMISSIONS ERROR:",
-                error
-            );
 
             if (error) {
-                return res.status(500).json({
-                    error: error.message,
-                });
+                console.error(
+                    "Submissions database error:",
+                    error
+                );
+
+                return res
+                    .status(500)
+                    .json({
+                        error:
+                            error.message,
+                    });
             }
 
-            const pending = data.filter(
-                (submission) =>
-                    submission.status === "pending"
-            );
+
+            // ---------------------------------
+            // LOAD JSON FILES FROM R2
+            // ---------------------------------
+
+            const submissions =
+                await Promise.all(
+                    data.map(
+                        async (submission) => {
+
+                            let animationJson = null;
+                            let jsonError = null;
+
+
+                            try {
+
+                                if (
+                                    !submission.storage_path
+                                ) {
+                                    throw new Error(
+                                        "Submission has no storage_path"
+                                    );
+                                }
+
+
+                                const objectUrl =
+                                    `${R2_URL}/${BUCKET}/${submission.storage_path}`;
+
+
+                                const fileResponse =
+                                    await r2.fetch(
+                                        objectUrl,
+                                        {
+                                            method: "GET",
+                                        }
+                                    );
+
+
+                                if (!fileResponse.ok) {
+                                    throw new Error(
+                                        `R2 returned ${fileResponse.status}`
+                                    );
+                                }
+
+
+                                const fileText =
+                                    await fileResponse.text();
+
+
+                                animationJson =
+                                    JSON.parse(
+                                        fileText
+                                    );
+
+
+                            } catch (error) {
+
+                                console.error(
+                                    `Failed to load JSON for submission ${submission.id}:`,
+                                    error
+                                );
+
+
+                                jsonError =
+                                    error.message;
+                            }
+
+
+                            // ---------------------------------
+                            // PUBLIC DOWNLOAD URL
+                            // ---------------------------------
+
+                            let downloadUrl = null;
+
+
+                            if (
+                                submission.storage_path &&
+                                R2_PUBLIC_URL
+                            ) {
+                                const encodedPath =
+                                    submission
+                                        .storage_path
+                                        .split("/")
+                                        .map(
+                                            encodeURIComponent
+                                        )
+                                        .join("/");
+
+
+                                downloadUrl =
+                                    `${R2_PUBLIC_URL}/${encodedPath}`;
+                            }
+
+
+                            // ---------------------------------
+                            // RETURN SUBMISSION
+                            // ---------------------------------
+
+                            return {
+                                id:
+                                    submission.id,
+
+                                name:
+                                    submission.name,
+
+                                author:
+                                    submission.author,
+
+                                mail:
+                                    submission.mail,
+
+                                status:
+                                    submission.status,
+
+                                createdAt:
+                                    submission.created_at,
+
+                                storagePath:
+                                    submission.storage_path,
+
+                                downloadUrl,
+
+                                json:
+                                    animationJson,
+
+                                jsonError,
+                            };
+                        }
+                    )
+                );
+
 
             console.log(
-                "PENDING SUBMISSIONS:",
-                pending
+                `Pending submissions loaded: ${submissions.length}`
             );
 
+
+            // ---------------------------------
+            // RESPONSE
+            // ---------------------------------
+
             return res.json({
-                submissions: pending,
-                count: pending.length,
+                submissions,
+                count:
+                    submissions.length,
             });
 
+
         } catch (error) {
+
             console.error(
                 "Submissions route error:",
                 error
             );
 
-            return res.status(500).json({
-                error:
-                    error.message ||
-                    "Internal server error",
+
+            return res
+                .status(500)
+                .json({
+                    error:
+                        error.message ||
+                        "Internal server error",
+                });
+        }
+    }
+);
+// =====================================================
+// APPROVE SUBMISSION
+// =====================================================
+
+// =====================================================
+// APPROVE SUBMISSION
+// =====================================================
+
+router.post(
+    "/admin/submissions/:id/approve",
+    requireAdmin,
+
+    async (req, res) => {
+        let newKey = null;
+        let createdAnimationId = null;
+
+        try {
+            const submissionId =
+                req.params.id;
+
+
+            // ---------------------------------
+            // GET SUBMISSION
+            // ---------------------------------
+
+            const {
+                data: submission,
+                error: submissionError,
+            } = await supabase
+                .from("animation_submissions")
+                .select("*")
+                .eq("id", submissionId)
+                .maybeSingle();
+
+
+            if (submissionError) {
+                console.error(
+                    "Submission load error:",
+                    submissionError
+                );
+
+                return res
+                    .status(500)
+                    .json({
+                        error:
+                            "Failed to load submission",
+                    });
+            }
+
+
+            if (!submission) {
+                return res
+                    .status(404)
+                    .json({
+                        error:
+                            "Submission not found",
+                    });
+            }
+
+
+            if (submission.status !== "pending") {
+                return res
+                    .status(400)
+                    .json({
+                        error:
+                            `Submission is already ${submission.status}`,
+                    });
+            }
+
+
+            if (!submission.storage_path) {
+                return res
+                    .status(400)
+                    .json({
+                        error:
+                            "Submission has no storage_path",
+                    });
+            }
+
+
+            // ---------------------------------
+            // SOURCE OBJECT
+            // ---------------------------------
+
+            const oldKey =
+                submission.storage_path;
+
+            const oldObjectUrl =
+                `${R2_URL}/${BUCKET}/${oldKey}`;
+
+
+            // ---------------------------------
+            // DOWNLOAD FROM submissions/
+            // ---------------------------------
+
+            const sourceResponse =
+                await r2.fetch(
+                    oldObjectUrl,
+                    {
+                        method: "GET",
+                    }
+                );
+
+
+            if (!sourceResponse.ok) {
+                console.error(
+                    "Failed to read submission file:",
+                    sourceResponse.status
+                );
+
+                return res
+                    .status(500)
+                    .json({
+                        error:
+                            "Failed to read submission file from R2",
+                    });
+            }
+
+
+            const fileBuffer =
+                await sourceResponse.arrayBuffer();
+
+
+            // ---------------------------------
+            // CREATE animations/ KEY
+            // ---------------------------------
+
+            const originalFileName =
+                oldKey.split("/").pop();
+
+
+            newKey =
+                `animations/${originalFileName}`;
+
+
+            const newObjectUrl =
+                `${R2_URL}/${BUCKET}/${newKey}`;
+
+
+            // ---------------------------------
+            // UPLOAD TO animations/
+            // ---------------------------------
+
+            const uploadResponse =
+                await r2.fetch(
+                    newObjectUrl,
+                    {
+                        method: "PUT",
+
+                        headers: {
+                            "Content-Type":
+                                "application/json",
+                        },
+
+                        body:
+                            fileBuffer,
+                    }
+                );
+
+
+            if (!uploadResponse.ok) {
+                const responseText =
+                    await uploadResponse.text();
+
+                console.error(
+                    "R2 animation copy failed:",
+                    uploadResponse.status,
+                    responseText
+                );
+
+                return res
+                    .status(500)
+                    .json({
+                        error:
+                            "Failed to move animation to published storage",
+                    });
+            }
+
+
+            // ---------------------------------
+            // PUBLIC DOWNLOAD URL
+            // ---------------------------------
+
+            const encodedKey =
+                newKey
+                    .split("/")
+                    .map(
+                        encodeURIComponent
+                    )
+                    .join("/");
+
+
+            const downloadUrl =
+                `${R2_PUBLIC_URL}/${encodedKey}`;
+
+
+            // ---------------------------------
+            // CREATE PUBLISHED ANIMATION
+            // ---------------------------------
+
+            const {
+                data: animation,
+                error: publishError,
+            } = await supabase
+                .from("animations")
+                .insert({
+                    name:
+                        submission.name,
+
+                    author:
+                        submission.author,
+
+                    mail:
+                        submission.mail,
+
+                    download_url:
+                        downloadUrl,
+                })
+                .select()
+                .single();
+
+
+            if (publishError) {
+                console.error(
+                    "Publish animation error:",
+                    publishError
+                );
+
+
+                // rollback new R2 object
+                try {
+                    await r2.fetch(
+                        newObjectUrl,
+                        {
+                            method: "DELETE",
+                        }
+                    );
+                } catch (cleanupError) {
+                    console.error(
+                        "Failed to cleanup copied animation:",
+                        cleanupError
+                    );
+                }
+
+
+                return res
+                    .status(500)
+                    .json({
+                        error:
+                            "Failed to publish animation",
+                    });
+            }
+
+
+            createdAnimationId =
+                animation.id;
+
+
+            // ---------------------------------
+            // UPDATE SUBMISSION
+            // ---------------------------------
+
+            const {
+                error: updateError,
+            } = await supabase
+                .from("animation_submissions")
+                .update({
+                    status:
+                        "approved",
+                })
+                .eq(
+                    "id",
+                    submissionId
+                );
+
+
+            if (updateError) {
+                console.error(
+                    "Submission status update failed:",
+                    updateError
+                );
+
+
+                // rollback DB animation
+                try {
+                    await supabase
+                        .from("animations")
+                        .delete()
+                        .eq(
+                            "id",
+                            createdAnimationId
+                        );
+                } catch (cleanupError) {
+                    console.error(
+                        "Animation DB rollback failed:",
+                        cleanupError
+                    );
+                }
+
+
+                // rollback new R2 file
+                try {
+                    await r2.fetch(
+                        newObjectUrl,
+                        {
+                            method: "DELETE",
+                        }
+                    );
+                } catch (cleanupError) {
+                    console.error(
+                        "R2 rollback failed:",
+                        cleanupError
+                    );
+                }
+
+
+                return res
+                    .status(500)
+                    .json({
+                        error:
+                            "Failed to approve submission",
+                    });
+            }
+
+
+            // ---------------------------------
+            // DELETE OLD submissions/ FILE
+            // ---------------------------------
+
+            try {
+                const deleteResponse =
+                    await r2.fetch(
+                        oldObjectUrl,
+                        {
+                            method: "DELETE",
+                        }
+                    );
+
+
+                if (!deleteResponse.ok) {
+                    console.warn(
+                        "Old submission file could not be deleted:",
+                        deleteResponse.status
+                    );
+                }
+
+            } catch (deleteError) {
+
+                /*
+                    Это уже не критично.
+
+                    Animation опубликована,
+                    status обновлён.
+
+                    Максимум останется
+                    старый дубликат в submissions/.
+                */
+
+                console.warn(
+                    "Old submission cleanup failed:",
+                    deleteError
+                );
+            }
+
+
+            // ---------------------------------
+            // SUCCESS
+            // ---------------------------------
+
+            console.log(
+                "Submission approved:",
+                submissionId
+            );
+
+            console.log(
+                "Moved:",
+                oldKey,
+                "->",
+                newKey
+            );
+
+
+            return res.json({
+                message:
+                    "Submission approved successfully",
+
+                animation,
+
+                storage: {
+                    oldPath:
+                        oldKey,
+
+                    newPath:
+                        newKey,
+
+                    downloadUrl,
+                },
             });
+
+
+        } catch (error) {
+
+            console.error(
+                "Approve submission error:",
+                error
+            );
+
+
+            return res
+                .status(500)
+                .json({
+                    error:
+                        error.message ||
+                        "Internal server error",
+                });
+        }
+    }
+);
+
+
+// =====================================================
+// REJECT SUBMISSION
+// =====================================================
+
+router.post(
+    "/admin/submissions/:id/reject",
+    requireAdmin,
+
+    async (req, res) => {
+        try {
+            const submissionId =
+                req.params.id;
+
+
+            // ---------------------------------
+            // GET SUBMISSION
+            // ---------------------------------
+
+            const {
+                data: submission,
+                error: submissionError,
+            } = await supabase
+                .from("animation_submissions")
+                .select(
+                    "id, status"
+                )
+                .eq(
+                    "id",
+                    submissionId
+                )
+                .maybeSingle();
+
+
+            if (submissionError) {
+                console.error(
+                    "Submission load error:",
+                    submissionError
+                );
+
+                return res
+                    .status(500)
+                    .json({
+                        error:
+                            "Failed to load submission",
+                    });
+            }
+
+
+            if (!submission) {
+                return res
+                    .status(404)
+                    .json({
+                        error:
+                            "Submission not found",
+                    });
+            }
+
+
+            if (submission.status !== "pending") {
+                return res
+                    .status(400)
+                    .json({
+                        error:
+                            `Submission is already ${submission.status}`,
+                    });
+            }
+
+
+            // ---------------------------------
+            // REJECT
+            // ---------------------------------
+
+            const {
+                error: rejectError,
+            } = await supabase
+                .from("animation_submissions")
+                .update({
+                    status: "rejected",
+                })
+                .eq(
+                    "id",
+                    submissionId
+                );
+
+
+            if (rejectError) {
+                console.error(
+                    "Reject submission error:",
+                    rejectError
+                );
+
+                return res
+                    .status(500)
+                    .json({
+                        error:
+                            "Failed to reject submission",
+                    });
+            }
+
+
+            console.log(
+                "Submission rejected:",
+                submissionId
+            );
+
+
+            return res.json({
+                message:
+                    "Submission rejected successfully",
+            });
+
+        } catch (error) {
+
+            console.error(
+                "Reject submission error:",
+                error
+            );
+
+
+            return res
+                .status(500)
+                .json({
+                    error:
+                        error.message ||
+                        "Internal server error",
+                });
         }
     }
 );

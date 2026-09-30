@@ -824,5 +824,123 @@ router.post(
     }
 );
 
+// =====================================================
+// GET PENDING SUBMISSIONS
+// =====================================================
+
+router.post(
+    "/admin/submissions",
+
+    requireAdmin,
+
+    async (req, res) => {
+        try {
+
+            const {
+                data,
+                error,
+            } = await supabase
+                .from("animation_submissions")
+                .select(
+                    `
+                    id,
+                    name,
+                    author,
+                    mail,
+                    storage_path,
+                    status,
+                    created_at
+                    `
+                )
+                .eq(
+                    "status",
+                    "pending"
+                )
+                .order(
+                    "created_at",
+                    {
+                        ascending: false,
+                    }
+                );
+
+
+            if (error) {
+                console.error(
+                    "Submissions load error:",
+                    error
+                );
+
+                return res
+                    .status(500)
+                    .json({
+                        error:
+                            "Failed to load submissions",
+                    });
+            }
+
+
+            const submissions =
+                data.map(
+                    (submission) => {
+
+                        const encodedPath =
+                            submission
+                                .storage_path
+                                .split("/")
+                                .map(
+                                    encodeURIComponent
+                                )
+                                .join("/");
+
+
+                        return {
+                            id:
+                                submission.id,
+
+                            name:
+                                submission.name,
+
+                            author:
+                                submission.author,
+
+                            mail:
+                                submission.mail,
+
+                            status:
+                                submission.status,
+
+                            createdAt:
+                                submission.created_at,
+
+                            downloadUrl:
+                                `${R2_PUBLIC_URL}/${encodedPath}`,
+                        };
+                    }
+                );
+
+
+            return res.json({
+                submissions,
+                count:
+                    submissions.length,
+            });
+
+        } catch (error) {
+
+            console.error(
+                "Submissions error:",
+                error
+            );
+
+            return res
+                .status(500)
+                .json({
+                    error:
+                        "Internal server error",
+                });
+        }
+    }
+);
+
 
 export default router;

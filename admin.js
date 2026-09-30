@@ -8,27 +8,16 @@ import { createClient } from "@supabase/supabase-js";
 const router = express.Router();
 
 
-// =====================================================
-// SUPABASE
-// =====================================================
-
 const supabase = createClient(
     process.env.SUPABASE_URL,
     process.env.SUPABASE_SERVICE_ROLE_KEY
 );
 
 
-// =====================================================
-// ADMIN
-// =====================================================
-
 const ADMIN_KEY =
     process.env.ADMIN_KEY?.trim();
 
 
-// =====================================================
-// R2
-// =====================================================
 
 const ACCOUNT_ID =
     process.env.R2_ACCOUNT_ID?.trim();
@@ -435,51 +424,89 @@ router.post(
 // CHECK ADMIN
 // =====================================================
 
-router.post(
-    "/admin/check",
+router.post("/admin/check", async (req, res) => {
+    try {
+        console.log(
+            "[ADMIN CHECK] body:",
+            req.body
+        );
 
-    async (req, res) => {
-        try {
-            const {
-                visitorId,
-            } = req.body;
-
-
-            if (!visitorId) {
-                return res
-                    .status(400)
-                    .json({
-                        error:
-                            "visitorId is required",
-                    });
-            }
+        const visitorId =
+            req.body?.visitorId;
 
 
-            const admin =
-                await isVisitorAdmin(
-                    visitorId
-                );
-
-
-            return res.json({
-                admin,
+        if (!visitorId) {
+            return res.status(400).json({
+                error:
+                    "visitorId is required",
             });
+        }
 
-        } catch (error) {
+
+        console.log(
+            "[ADMIN CHECK] visitorId:",
+            visitorId
+        );
+
+
+        const {
+            data,
+            error,
+        } = await supabase
+            .from("admin_visitors")
+            .select("id, visitor_id")
+            .eq(
+                "visitor_id",
+                visitorId
+            )
+            .maybeSingle();
+
+
+        if (error) {
             console.error(
-                "Admin check error:",
+                "[ADMIN CHECK] Supabase error:",
                 error
             );
 
-            return res
-                .status(500)
-                .json({
-                    error:
-                        "Internal server error",
-                });
+            return res.status(500).json({
+                error:
+                    "Failed to check admin",
+
+                details:
+                    error.message,
+            });
         }
+
+
+        console.log(
+            "[ADMIN CHECK] result:",
+            data
+        );
+
+
+        return res.json({
+            admin:
+                Boolean(data),
+        });
+
+
+    } catch (error) {
+
+        console.error(
+            "[ADMIN CHECK] INTERNAL ERROR:",
+            error
+        );
+
+
+        return res.status(500).json({
+            error:
+                "Internal server error",
+
+            details:
+                error.message,
+        });
     }
-);
+});
 
 
 // =====================================================

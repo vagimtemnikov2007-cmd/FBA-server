@@ -9,7 +9,7 @@ export const animationCatalog = createAnimationCatalog({
     storage: createR2Storage(),
     async loadRows() {
         const { data, error } = await supabase.from("animations")
-            .select("id,name,download_url,preview_url,author,created_at").order("created_at", { ascending: false });
+            .select("id,name,download_url,preview_url,author,created_at,download_count").order("created_at", { ascending: false });
         if (error) throw error;
         return data ?? [];
     },

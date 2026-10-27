@@ -7,6 +7,13 @@ function keyMatches(actual, expected) {
     return a.length === b.length && timingSafeEqual(a, b);
 }
 
+function downloads(row) {
+    const value = Number(row.download_count);
+    return Number.isFinite(value) && value > 0 ? value : 0;
+}
+
+function createdAt(row) { return Date.parse(row.created_at) || 0; }
+
 export function createAnimationRouter({ catalog, env = process.env, logger = console }) {
     const router = express.Router();
     function baseUrl(req) {
@@ -21,12 +28,18 @@ export function createAnimationRouter({ catalog, env = process.env, logger = con
     router.get("/animations", async (req, res) => {
         try {
             const rows = await catalog.entries(), origin = baseUrl(req);
+            // Publish the order without publishing download totals. Equal totals favour newer uploads.
+            const popularity = new Map([...rows].sort((a, b) => downloads(b.row) - downloads(a.row)
+                || createdAt(b.row) - createdAt(a.row) || String(a.row.id).localeCompare(String(b.row.id)))
+                .map(({ row }, index) => [row.id, index + 1]));
             res.set("Cache-Control", "public, max-age=30");
             return res.json(rows.map(({ row, key, revision }) => {
                 const url = new URL(`${origin}/animations/${encodeURIComponent(row.id)}/json`);
                 if (revision) url.searchParams.set("v", revision.replace(/^"|"$/g, ""));
                 const download = new URL(url); download.searchParams.set("download", "1");
-                return { ...row, animation_url: url.href, download_url: download.href, json_status: key ? "ready" : "missing" };
+                const publicRow = { ...row }; delete publicRow.download_count;
+                return { ...publicRow, popularity_rank: popularity.get(row.id), animation_url: url.href,
+                    download_url: download.href, json_status: key ? "ready" : "missing" };
             }));
         } catch (error) { return failure(res, error); }
     });

@@ -154,6 +154,31 @@ test("HTTP refresh requires a configured secret and does not modify caches when 
     });
 });
 
+test("HTTP catalog ranks by downloads, breaks ties by date and never exposes download counts", async () => {
+    const rows = [
+        { id: "new-low", name: "Newest", created_at: "2026-10-27", download_count: 4 },
+        { id: "popular-old", name: "Popular older", created_at: "2026-09-01", download_count: 420 },
+        { id: "popular-new", name: "Popular newer", created_at: "2026-10-01", download_count: "420" },
+        { id: "zero", name: "No downloads", created_at: "2026-10-20", download_count: null },
+        { id: "missing", name: "Missing counter", created_at: "2026-10-19" },
+    ];
+    const before = JSON.stringify(rows);
+    const entries = rows.map(row => ({ row, key: `jsons/${row.id}.json` }));
+    const catalog = { entries: async () => entries };
+    await serve(createAnimationRouter({ catalog, env: {}, logger: quiet }), async base => {
+        const response = await fetch(base + "/animations"); assert.equal(response.status, 200);
+        const cards = await response.json();
+        assert.deepEqual([...cards].sort((a, b) => a.popularity_rank - b.popularity_rank).map(row => row.id),
+            ["popular-new", "popular-old", "new-low", "zero", "missing"]);
+        assert(cards.every(card => !Object.hasOwn(card, "download_count")));
+        assert.equal(JSON.stringify(rows), before, "public projection must not mutate the cached database rows");
+        // Counts read by the next catalog snapshot change the rank without a schema migration.
+        rows[0].download_count = 421;
+        const updated = await (await fetch(base + "/animations")).json();
+        assert.equal(updated.find(row => row.id === "new-low").popularity_rank, 1);
+    });
+});
+
 test("unknown configuration returns a controlled error without exposing credentials", async () => {
     const storage = createR2Storage({ env: { R2_BUCKET_NAME: "fba" } });
     const catalog = createAnimationCatalog({ storage, loadRows: async () => [], logger: quiet });

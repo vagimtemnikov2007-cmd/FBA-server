@@ -6,11 +6,13 @@ import sumbitssionsRouter from "./sumbitssions.js"
 import adminRouter from "./admin.js";
 
 const app = express();
+app.set("trust proxy", 1);
 
 app.use(cors());
 app.use(express.json());
 
 app.get("/", (req, res) => {
+  res.json({ service: "fba-server", status: "ok" });
 });
 
 app.use("/", telemetryRouter);

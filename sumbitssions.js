@@ -3,6 +3,7 @@ import multer from "multer";
 import crypto from "crypto";
 import { AwsClient } from "aws4fetch";
 import { createClient } from "@supabase/supabase-js";
+import { animationValidationError } from "./animation-validation.js";
 
 const router = express.Router();
 
@@ -126,9 +127,10 @@ router.post(
             }
 
 
-            if (!animationJson.transform) {
+            const validationError = animationValidationError(animationJson);
+            if (validationError) {
                 return res.status(400).json({
-                    error: "Animation JSON is missing transform",
+                    error: validationError,
                 });
             }
 

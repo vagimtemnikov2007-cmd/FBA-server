@@ -3,6 +3,9 @@ import crypto from "crypto";
 import multer from "multer";
 import { AwsClient } from "aws4fetch";
 import { createClient } from "@supabase/supabase-js";
+import { JSON_PREFIX } from "./r2-storage.js";
+import { animationValidationError, readAnimationResponse } from "./animation-validation.js";
+import { animationCatalog } from "./animations.js";
 
 
 const router = express.Router();
@@ -610,12 +613,13 @@ router.post(
             }
 
 
-            if (!animationJson.transform) {
+            const validationError = animationValidationError(animationJson);
+            if (validationError) {
                 return res
                     .status(400)
                     .json({
                         error:
-                            "Animation JSON is missing transform",
+                            validationError,
                     });
             }
 
@@ -642,7 +646,7 @@ router.post(
 
 
             const key =
-                `animations/${fileName}`;
+                `${JSON_PREFIX}/${fileName}`;
 
 
             uploadedKey =
@@ -791,6 +795,7 @@ router.post(
                 "Animation published:",
                 data.id
             );
+            animationCatalog.invalidate();
 
 
             return res
@@ -1183,12 +1188,16 @@ router.post(
             }
 
 
-            const fileBuffer =
-                await sourceResponse.arrayBuffer();
+            let fileBuffer;
+            try {
+                fileBuffer = (await readAnimationResponse(sourceResponse)).bytes;
+            } catch (error) {
+                return res.status(error.status || 422).json({ error: error.message });
+            }
 
 
             // ---------------------------------
-            // CREATE animations/ KEY
+            // CREATE published jsons/ KEY
             // ---------------------------------
 
             const originalFileName =
@@ -1196,7 +1205,7 @@ router.post(
 
 
             newKey =
-                `animations/${originalFileName}`;
+                `${JSON_PREFIX}/${originalFileName}`;
 
 
             const newObjectUrl =
@@ -1204,7 +1213,7 @@ router.post(
 
 
             // ---------------------------------
-            // UPLOAD TO animations/
+            // UPLOAD TO published jsons/
             // ---------------------------------
 
             const uploadResponse =
@@ -1437,6 +1446,7 @@ router.post(
                 "Submission approved:",
                 submissionId
             );
+            animationCatalog.invalidate();
 
             console.log(
                 "Moved:",
